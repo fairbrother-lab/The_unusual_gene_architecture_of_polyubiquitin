@@ -19,4 +19,3 @@ William Fairbrother  william_fairbrother@brown.edu
 
 # Notes
 - Some scripts in scripts/gnomAD reference a folder in data/gnomAD that isn't included here due to its size (>3 TB). The files contained in the folder can be downloaded from Google Cloud Public Datasets at gs://gcp-public-data--gnomad/release/3.1.1/vcf/genomes and gs://gcp-public-data--gnomad/release/2.1.1/vcf/genomes as in scripts/gnomAD/gnomAD_download.sh
-- 
