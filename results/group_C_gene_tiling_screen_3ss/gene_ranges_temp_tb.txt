@@ -1,0 +1,4 @@
+seqnames	gene_name	start	end	width	strand
+chr13	BRCA2	32315086	32400266	85181	+
+chr17	BRCA1	43044295	43170245	125951	-
+chr19	LDLR	11089362	11133816	44455	+
