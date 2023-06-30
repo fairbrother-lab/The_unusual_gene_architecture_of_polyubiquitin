@@ -1,4 +1,4 @@
-Data & scripts for the following research paper:
+Scripts & results data for the following research paper:
 
 >**The unusual gene architecture of polyubiquitin is created by dual-specific splice sites**
 >
@@ -14,6 +14,8 @@ Data & scripts for the following research paper:
 >
 >*Correspondence:
 >William Fairbrother  william_fairbrother@brown.edu
+
+All other data can be found at **FINISHED ZENODO RECORD DOI**
 
 
 
