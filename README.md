@@ -15,7 +15,7 @@ Scripts & results data for the following research paper:
 >*Correspondence:
 >William Fairbrother  william_fairbrother@brown.edu
 
-All other data can be found at **FINISHED ZENODO RECORD DOI**
+All other data can be found at **INSERT ZENODO RECORD DOI FOR FINAL VERSION OF RECORD**
 
 
 
