@@ -816,20 +816,12 @@ set.seed(1)
 n_trials = 1000*100
 n_intron_is_mult = c()
 n_intron_is_mult_rmult3 = c()
-n_intron_is_noneq_mult = c()
-n_intron_is_eq = c()
 for(t in 1:n_trials){
-	# repeat_lengths = sample(hits.unique$R_size)
 	repeat_lengths = sample(hits.unique$R_size)
-	# n_intron_is_mult = c(n_intron_is_mult, sum(intron_lengths %% repeat_lengths == 0))
-	# n_intron_is_noneq_mult = c(n_intron_is_noneq_mult, sum(intron_lengths > repeat_lengths & intron_lengths %% repeat_lengths == 0))
-	# n_intron_is_eq = c(n_intron_is_eq, sum(intron_lengths == repeat_lengths))
+
 	n_intron_is_mult = c(n_intron_is_mult, nrow(intron_lengths %>% filter(I_length %% repeat_lengths == 0) %>% distinct(I_coords)))
-	n_intron_is_mult_rmult3 = c(n_intron_is_mult, nrow(intron_lengths %>% filter(I_length %% repeat_lengths == 0, R_mult3) %>% distinct(I_coords)))
-	n_intron_is_noneq_mult = c(n_intron_is_noneq_mult, nrow(intron_lengths %>% filter(I_length > repeat_lengths & I_length %% repeat_lengths == 0) %>% distinct(I_coords)))
-	n_intron_is_eq = c(n_intron_is_eq, nrow(intron_lengths %>% filter(I_length == repeat_lengths) %>% distinct(I_coords)))
+	n_intron_is_mult_rmult3 = c(n_intron_is_mult_rmult3, nrow(intron_lengths %>% filter(I_length %% repeat_lengths == 0, R_mult3) %>% distinct(I_coords)))
 }
-# rm(n_intron_is_mult, n_intron_is_noneq_mult, n_intron_is_eq)
 ```
 
 
@@ -845,52 +837,27 @@ ggplot(n_intron_is_mult.df, aes(x=N, y=Prop)) +
 ```
 
 ```{r}
-n_intron_is_noneq_mult.df = as.data.frame(table(n_intron_is_noneq_mult)) %>% rename('N'='n_intron_is_noneq_mult') %>% mutate(Prop = Freq/n_trials)
-sum(n_intron_is_noneq_mult.df$Prop)
+n_intron_is_mult_rmult3.df = as.data.frame(table(n_intron_is_mult_rmult3)) %>% rename('N'='n_intron_is_mult_rmult3') %>% mutate(Prop = Freq/n_trials)
+sum(n_intron_is_mult_rmult3.df$Prop)
 
-ggplot(n_intron_is_noneq_mult.df, aes(x=N, y=Prop)) +
+ggplot(n_intron_is_mult_rmult3.df, aes(x=N, y=Prop)) +
 	geom_col() +
 	scale_y_continuous(labels=label_percent(scale = 100)) +
-	labs(y=NULL, x=md('Number of times Intron > Repeat and Intron length mod Repeat Unit length = 0'))
+	labs(y=NULL, x=md('Number of times Intron length mod Repeat Unit length = 0 AND Repeat unit is mult of 3'))
 ```
 
 
 
 ```{r}
-n_intron_is_eq.df = as.data.frame(table(n_intron_is_eq)) %>% rename('N'='n_intron_is_eq') %>% mutate(Prop = Freq/n_trials)
-sum(n_intron_is_eq.df$Prop)
-
-ggplot(n_intron_is_eq.df, aes(x=N, y=Prop)) +
-	geom_col() +
-	scale_y_continuous(labels=label_percent(scale = 100)) +
-	labs(y=NULL, x='Number of times Intron length = Repeat Unit length')
-```
-
-
-
-```{r}
-# n_len_mult = sum(hits.unique$I_length %% hits.unique$R_size == 0)
-# n_len_noneq_mult = sum(hits.unique$I_length > hits.unique$R_size & hits.unique$I_length %% hits.unique$R_size == 0)
-# n_len_eq = sum(hits.unique$I_length == hits.unique$R_size)
 n_len_mult = nrow(hits.unique %>% filter(I_length %% R_size == 0) %>% distinct(I_coords))
 n_len_mult_rmult3 = nrow(hits.unique %>% filter(I_length %% R_size == 0, R_mult3) %>% distinct(I_coords))
-n_len_noneq_mult = nrow(hits.unique %>% filter(I_length > R_size, I_length %% R_size == 0) %>% distinct(I_coords))
-n_len_eq = nrow(hits.unique %>% filter(I_length == R_size) %>% distinct())
-paste(n_len_mult, n_len_mult_rmult3, n_len_noneq_mult, n_len_eq)
+paste(n_len_mult, n_len_mult_rmult3)
 
 mult_success = sum(n_intron_is_mult >= n_len_mult)
 paste(mult_success, mult_success / n_trials)
 
 mult_rmult3_success = sum(n_intron_is_mult_rmult3 >= n_len_mult_rmult3)
 paste(mult_rmult3_success, mult_rmult3_success / n_trials)
-
-noneq_mult_success = sum(n_intron_is_noneq_mult >= n_len_noneq_mult)
-paste(noneq_mult_success, noneq_mult_success / n_trials)
-
-eq_success = sum(n_intron_is_eq >= n_len_eq)
-paste(eq_success, eq_success / n_trials)
-
-
 ```
 
 
