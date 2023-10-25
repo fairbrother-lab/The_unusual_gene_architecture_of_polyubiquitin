@@ -1,0 +1,1540 @@
+---
+title: "R Notebook Template"
+---
+```{r}
+##########   Packages and Settings   ##########
+# The R packages I want to load
+packages = c('BiocManager',
+						'rmarkdown',
+						'parallel',
+						'extrafont',
+						'stringr',
+						'eList',
+						'jsonlite', 'readxl', 'svglite',
+						'dplyr', 'tidyverse',
+						'moments', 'vegan', 'car',
+						'corrplot', 'cluster', 'factoextra',
+						'tidygraph', 'igraph', 'scales',
+						'ggplot2', 'ggtext', 'ggraph', 'ggstatsplot', 'ggpubr', 'gggenes', 'ggseqlogo', 'ggforce', 'ggthemes', 'gganimate', 'patchwork', 
+						'gt', 'gtExtras')
+
+# Require each package, but before that, check if it's installed. If not, install it first.
+for (pkg in packages) {
+  if (!require(pkg, character.only=TRUE, quietly=TRUE)){
+    if(pkg %in% c('DESeq2', 'tximport')){ BiocManager::install(pkg) }
+    else{ install.packages(pkg, character.ony=TRUE) }
+  }
+  library(pkg, character.only = TRUE)
+}
+
+# Load fonts from extrafont
+loadfonts(quiet=TRUE)
+```
+
+```{r}
+##########   Functions   ##########
+var_name = function(variable){
+	return(deparse(substitute(variable)))
+}
+
+
+
+save_plot_as_svg = function(the_plot, filename){
+	svglite(filename, bg='transparent')
+	print(the_plot)
+	dev.off()
+}
+
+
+
+clean_dataframe = function(df){
+	# 'True'/'False' character cols to TRUE/FALSE logical cols
+	for(col in colnames(df)){
+		unique_vals = as.vector(unique(df[col]))[[1]]
+		if(setequal(unique_vals, c('True')) | setequal(unique_vals, c('False')) | setequal(unique_vals, c('True', 'False')) ){
+			df[col] = as.logical(unlist(df[col]))
+		}
+	}
+	
+	return(df)
+} # End of function
+
+
+
+init_df = function(column_names){
+	df = matrix(nrow=0, ncol=length(column_names), dimnames=list(NULL, column_names))
+	return(as.data.frame(df))
+} # End of function
+
+
+
+rowbind = function(dataframe, list_row){
+	stopifnot( length(list_row) == ncol(dataframe) )
+	stopifnot( nrow(dataframe)==0 | sapply(list_row, typeof) == sapply(dataframe, typeof) )
+	list_row = setNames(list_row, names(dataframe))
+	df = rbind(dataframe, list_row)
+	return(df)
+} # End of function
+
+
+
+clump_bin = function(vector, interval){
+	out_vector = c()
+	bins = seq(1, length(vector), by=interval)
+	
+	for(bin_start in bins){
+		bin_end = bin_start+interval-1
+		clump = sum(vector[bin_start:bin_end], na.rm = TRUE)
+		if(bin_end > length(vector)){
+			reps = length(vector) - bin_start + 1
+		}else{
+			reps = interval
+		}
+		out_vector = c(out_vector, rep(clump, reps))
+	}
+	return(out_vector)
+} # End of function
+
+
+
+COR_MAX_CELL_COUNT = 200000
+cor_describe = function(df,
+												vars=NULL,
+												ignore_vars=FALSE,
+												return_cor=NULL,
+												save_svg=TRUE){
+	
+	if(is.null(vars)){
+			df.numeric = select(df, where(is.numeric))
+	}else{
+		if(isTRUE(ignore_vars)){
+			df.numeric = select(df, -c(vars) & where(is.numeric))
+		}else{
+			df.numeric = select(df, vars)
+		}
+	}
+	var_num = ncol(df.numeric)
+	text_size = 16 / (var_num*2)
+	cell_count = nrow(df.numeric) * var_num
+	if(cell_count >= COR_MAX_CELL_COUNT){
+		stop(paste("Too much data. Max cell count is ", comma(COR_MAX_CELL_COUNT), "and you're inputting", comma(cell_count), "cells"))
+	}
+	df.cor = cor(df.numeric, method='kendall')
+	corrplot(df.cor, 
+					 method='square', 
+					 type="lower", 
+					 diag=FALSE, 
+					 title=paste(var_num, "variables"),
+					 col=COL2('RdBu'), 
+					 cl.pos="n", 
+					 tl.cex=text_size,
+					 cl.cex=text_size,
+					 number.cex=text_size * 3/4,
+					 number.digits=2,
+					 tl.col='black', 
+					 addCoef.col="black",
+					 na.label="NA")
+	
+	if(isTRUE(save_svg)){
+		c_plot = recordPlot()
+		title = paste(var_name(df), "_corrplot.svg", sep="")
+		if("./visuals" %in% list.dirs()){
+			title = paste("visuals/", title, sep="")
+		}
+		save_plot_as_svg(c_plot, title)
+	}
+	
+	if(isTRUE(return_cor)){
+		return(df.cor)
+	}
+} # End of function
+
+
+
+#TODO fix min/max number formatting
+gghist = function(df,
+                  variable,
+                  xlims=NULL,
+                  ylims=NULL,
+                  xbreaks=NULL,
+                  ybreaks=NULL,
+                  bins=50,
+                  print_plot=FALSE){
+	if(! variable %in% colnames(df)){
+		stop(paste('Column "', variable, '" not in dataframe', sep=""))
+	}
+	
+	if(!is.null(xbreaks) & is.null(xlims)){
+		xlims = c(min(unlist(xbreaks)), max(unlist(xbreaks)))
+	}else if(is.null(xbreaks)){
+		xbreaks = waiver()
+	}
+	if(is.null(ylims) & !is.null(ybreaks)){
+		ylims = c(min(unlist(ybreaks)), max(unlist(ybreaks)))
+	}else if(is.null(ybreaks)){
+		ybreaks = waiver()
+	}
+
+  col = df[[variable]]
+  na_count = sum(is.na(col))
+  col = col[!is.na(col)]
+  
+  min. = min(col)
+  mean. = mean(col)
+  Q1 = quantile(col, prob=0.25)
+  Q2 = quantile(col, prob=0.50)
+  Q3 = quantile(col, prob=0.75)
+  max. = max(col)
+  
+  min. = if_else(abs(min.) >= 1, comma(min., accuracy=0.01), format(min., digits=3, scientific=TRUE))
+  max. = if_else(abs(max.) >= 1, comma(max., accuracy=0.01), format(max., digits=3, scientific=TRUE))
+  title=paste( "min =", min., "    max =", max., if_else(na_count==0, "", paste("    NAs =", na_count)) )
+
+  gg = ggplot(df, aes(x=.data[[variable]]))+
+        geom_histogram(fill='grey', color='black', bins=bins)+
+        annotate('segment', x=mean., xend=mean., y=0, yend=Inf, color='#e41a1c', alpha=0.5) +
+        annotate('segment', x=Q1, xend=Q1, y=0, yend=Inf, color='#69B0EA', alpha=0.5) +
+        annotate('segment', x=Q2, xend=Q2, y=0, yend=Inf, color='#377eb8', alpha=0.5) +
+        annotate('segment', x=Q3, xend=Q3, y=0, yend=Inf, color='#054C86', alpha=0.5) +
+  			scale_x_continuous(limits=xlims, breaks = xbreaks, oob=squish) + 
+  			scale_y_continuous(limits=ylims, breaks = ybreaks) + 
+        labs(x=variable, y="Count", title=title)
+  
+  if(print_plot){ print(gg) }
+  return(gg)
+} # End of function
+
+
+
+ggbar = function(df,
+                variable,
+								horizontal=TRUE,
+								order_by_count=FALSE,
+                print_plot=FALSE){
+	
+	if(! variable %in% colnames(df)){
+		stop(paste('Column "', variable, '" not in dataframe', sep=""))
+	}
+	
+  na_count = sum(is.na(df[variable]))
+  title=if_else(na_count==0, "", paste("    NAs =", na_count))
+  max_freq = max(table(df[variable]))
+  
+	col = as.data.frame(table(df[variable])) %>% 
+					na.omit() %>%
+					rename("Var"=variable) %>%
+					mutate(Label_pos = Freq + sum(Freq)*0.02)
+  
+	if(order_by_count){
+		col$Var = factor(col$Var, levels=as.character(arrange(col, Freq)$Var))
+	}
+
+	gg = ggplot(col, aes(x=Var))+
+	      geom_col(aes(y=Freq)) +
+				geom_text(aes(y=Inf, label=comma(Freq)), hjust=1, size=3) +
+				scale_y_continuous(limits=c(0, 1.1*max_freq), labels=comma) +
+	      labs(x=variable, y="Count", title=title)
+	
+	if(horizontal){
+		gg = gg + coord_flip() + theme(axis.ticks.y=element_blank())
+	}else{
+		gg = gg + theme(axis.ticks.x=element_blank())
+	}
+	
+  if(print_plot){ print(gg) }
+	
+  return(gg)
+} # End of function
+
+
+
+ggdescribe = function(df, 
+											vars = NULL,
+											ignore_vars=FALSE){
+	
+	if(!is.null(vars) & !ignore_vars){
+			df = select(df, any_of(vars))
+	}else if(!is.null(vars) & ignore_vars){
+			df = select(df, -any_of(vars))
+	}
+	
+	datatypes = sapply(df, class)
+	for(var in names(datatypes)){
+		if(!is.null(ignore_vars) & var %in% ignore_vars){
+			next
+		}
+		datatype = datatypes[[var]]
+		n_unique_vals = length(unique(df[[var]]))
+
+		# Bar plot for categorical variables
+		if(datatype %in% c("character", "factor")){
+			if(n_unique_vals > 30){
+				print(paste('Skipping "', var, '"', " because it has >30 (", n_unique_vals, ") unique values", sep=""))
+				next
+			}
+			ggbar(df, var, print_plot=TRUE)
+		# Histogram for numerical variables
+		}else if(datatype %in% c("numeric", "integer")){
+			gghist(df, var, print_plot=TRUE)
+			# Normalcy tests
+		}
+	}
+} # End of function
+
+
+
+dist_norm = function(data_){
+# data_ = results.full$Canon_donor_log2fc
+	qqnorm(data_)
+	qqline(data_)
+	skew = signif(skewness(data_), 5)
+	kurt = signif(kurtosis(data_), 5)
+	print(paste('Skewness:', skew))
+	print(paste('Kurtosis:', kurt))
+	if(length(data_) < 5000){
+		print(shapiro.test(data_))
+	}else{
+		print(paste('The sample size is too large for a Shapiro-Wilk test (', comma(length(data_)), '> 5,000)', sep="" ))
+	}
+}
+
+
+
+df_describe = function(df){
+	
+}
+```
+
+```{r}
+##########   Settings   ##########
+theme_replace(panel.background = element_blank(),
+							panel.grid.major=element_blank(),
+							panel.grid.minor=element_blank())
+							
+mclapply = function(...) {mclappy(..., mc.cores=6)}
+```
+
+```{r}
+##########   Constants   ##########
+DNA_BASES = c('A', 'T', 'G', 'C')
+HUMAN_CHROMOSOMES = c('chr1', 'chr2', 'chr3', 'chr4', 'chr5', 'chr6', 'chr7', 'chr8', 'chr9', 'chr10', 'chr11', 'chr12', 'chr13', 'chr14', 'chr15', 'chr16', 'chr17', 'chr18', 'chr19', 'chr20', 'chr21', 'chr22', 'chrX', 'chrY', 'chrM')
+GENE_TYPES_GEN43 = c('lncRNA' = 18874,
+										 # 'total' = 62666,
+										 'transcribed_unprocessed_pseudogene' = 959,
+										 'unprocessed_pseudogene' = 2608,
+										 'miRNA' = 1879,
+										 'protein_coding' = 20029,
+										 'processed_pseudogene' = 10148,
+										 'snRNA' = 1901,
+										 'transcribed_processed_pseudogene' = 512,
+										 'misc_RNA' = 2212,
+										 'TEC' = 1054,
+										 'transcribed_unitary_pseudogene' = 155,
+										 'snoRNA' = 942,
+										 'scaRNA' = 49,
+										 'rRNA_pseudogene' = 497,
+										 'unitary_pseudogene' = 99,
+										 'pseudogene' = 15,
+										 'rRNA' = 47,
+										 'IG_V_pseudogene' = 187,
+										 'scRNA' = 1,
+										 'IG_V_gene' = 145,
+										 'IG_C_gene' = 14,
+										 'IG_J_gene' = 18,
+										 'sRNA' = 5,
+										 'ribozyme' = 8,
+										 'translated_processed_pseudogene' = 2,
+										 'vault_RNA' = 1,
+										 'TR_C_gene' = 6,
+										 'TR_J_gene' = 79,
+										 'TR_V_gene' = 107,
+										 'TR_V_pseudogene' = 33,
+										 'translated_unprocessed_pseudogene' = 3,
+										 'TR_D_gene' = 4,
+										 'IG_C_pseudogene' = 9,
+										 'TR_J_pseudogene' = 4,
+										 'IG_J_pseudogene' = 3,
+										 'IG_D_gene' = 37,
+										 'IG_pseudogene' = 1,
+										 'artifact' = 19)
+PANTHER_UNMAPPED = c(
+'ENSG00000283259',
+'ENSG00000285945',
+'ENSG00000239945',
+'ENSG00000227372',
+'ENSG00000284744',
+'ENSG00000281133',
+'ENSG00000280836',
+'ENSG00000281825',
+'ENSG00000226419',
+'ENSG00000273136',
+'ENSG00000272150',
+'ENSG00000291005',
+'ENSG00000271425',
+'ENSG00000270629',
+'ENSG00000224691',
+'ENSG00000238224',
+'ENSG00000277997',
+'ENSG00000230006',
+'ENSG00000291127',
+'ENSG00000235717',
+'ENSG00000286588',
+'ENSG00000232873',
+'ENSG00000228028',
+'ENSG00000232832',
+'ENSG00000250658',
+'ENSG00000273957',
+'ENSG00000228789',
+'ENSG00000225096',
+'ENSG00000236173',
+'ENSG00000225532',
+'ENSG00000236510',
+'ENSG00000227855',
+'ENSG00000279072',
+'ENSG00000234456',
+'ENSG00000241449',
+'ENSG00000203335',
+'ENSG00000254160',
+'ENSG00000253307',
+'ENSG00000271959',
+'ENSG00000234534',
+'ENSG00000234394',
+'ENSG00000276662',
+'ENSG00000234170',
+'ENSG00000226705',
+'ENSG00000229206',
+'ENSG00000228302',
+'ENSG00000236762',
+'ENSG00000214807',
+'ENSG00000255089',
+'ENSG00000250397',
+'ENSG00000285562',
+'ENSG00000284634',
+'ENSG00000255825',
+'ENSG00000278356',
+'ENSG00000287577',
+'ENSG00000230657',
+'ENSG00000251655',
+'ENSG00000257740',
+'ENSG00000236953',
+'ENSG00000170919',
+'ENSG00000211897',
+'ENSG00000224078',
+'ENSG00000259205',
+'ENSG00000260316',
+'ENSG00000263326',
+'ENSG00000261766',
+'ENSG00000282924',
+'ENSG00000260889',
+'ENSG00000261630',
+'ENSG00000260617',
+'ENSG00000262905',
+'ENSG00000263164',
+'ENSG00000181222',
+'ENSG00000265401',
+'ENSG00000263609',
+'ENSG00000285822',
+'ENSG00000214553',
+'ENSG00000267543',
+'ENSG00000262979',
+'ENSG00000266654',
+'ENSG00000264265',
+'ENSG00000267356',
+'ENSG00000266227',
+'ENSG00000267675',
+'ENSG00000282508',
+'ENSG00000269371',
+'ENSG00000268120',
+'ENSG00000267373',
+'ENSG00000268658',
+'ENSG00000261824',
+'ENSG00000269349',
+'ENSG00000232098',
+'ENSG00000232900',
+'ENSG00000280604',
+'ENSG00000188511',
+'ENSG00000226179',
+'ENSG00000232562',
+'ENSG00000236491',
+'ENSG00000224539',
+'ENSG00000277486',
+'ENSG00000198022',
+'ENSG00000236337',
+'ENSG00000223516',
+'ENSG00000197038',
+'ENSG00000270073',
+'ENSG00000169811')
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+##########   Initial Data Load   ##########
+hits = read.table('repeat_regions_x_introns.tsv', header=TRUE, sep='\t', na.string=c('NA', 'None')) %>% clean_dataframe()
+hits_og = hits
+```
+
+```{r}
+hits = hits %>% mutate(Chrom = factor(Chrom, levels=HUMAN_CHROMOSOMES),
+											 R_coords = paste(Chrom, R_start, R_end, sep='_'),
+											 I_size_diff = case_when(I_length < R_size ~ 'Smaller',
+																							I_length == R_size ~ 'Equal',
+																							I_length > R_size ~ 'Larger'), 
+											 I_size_diff = factor(I_size_diff, levels = c('Larger', 'Equal', 'Smaller')),
+											 Gene_ID_base = gsub('\\..*', '', Gene_ID)
+											 )
+hits[hits$I_coords == 'chr1_145577394_145578011', 'Gene_ID'] = 'ENSG00000272150.6,ENSG00000291005.1'
+hits[hits$I_coords == 'chr1_145577394_145578011', 'Gene_ID_base'] = 'ENSG00000272150,ENSG00000291005'
+hits[hits$I_coords == 'chr1_145577394_145578011', 'Gene_type'] = 'lncRNA,transcribed_unprocessed_pseudogene'
+hits[hits$I_coords == 'chr1_145577394_145578011', 'Transcript'] = 'ENST00000606775.2,ENST00000619932.4'
+hits[hits$I_coords == 'chr1_145577394_145578011', 'T_type'] = 'lncRNA,transcribed_unprocessed_pseudogene'
+hits[hits$I_coords == 'chr1_145577394_145578011', 'I_ID'] = NA
+hits = hits %>% distinct()
+
+view(hits[hits$Gene=='NBPF25P',])
+```
+
+
+```{r}
+paste(length(unique(hits$R_ID)), length(unique(hits$R_coords)))
+while(length(unique(hits$R_ID)) != length(unique(hits$R_coords))){
+	regions = hits %>% distinct(Chrom, R_start, R_end)
+	region_dups = list()
+	for(n in 1:nrow(regions)){
+		row = regions[n,]
+		reg_hits = hits %>% filter(Chrom == row$Chrom, R_start == row$R_start, R_end == row$R_end)
+		reg_rids = unique(reg_hits$R_ID)
+		if(length(reg_rids) > 1){
+			print(paste(row))
+			print(reg_rids)
+			region_dups = append(region_dups, list(reg_rids))
+			# if(length(unique(reg_hits$R_size)) > 1 | reg_rids[1]=="chr10_32844904_32845787_298_587979"){
+			# 	for(r in 1:length(reg_rids)){
+			# 		if(r == 1){next}
+			# 		hits = hits %>% filter(R_ID != reg_rids[r])
+			# 	}
+			# }
+		}
+	}
+	print(length(region_dups))
+	
+	for(reg_dup in region_dups){
+		print(reg_dup)
+		reg_rows = hits %>% filter(R_ID %in% reg_dup) %>% distinct (R_period, R_copy_num, R_size, R_sequence, R_ID)
+		# if(length(unique(reg_rows$R_size)) > 1){
+		# 	print(paste(reg_dup, unique(reg_rows$R_size), collapse=' '))
+		# 	greater_rid = reg_rows[reg_rows$R_size == max(unique(reg_rows$R_size)), 'R_ID']
+		# 	print(greater_rid)
+		# 	hits %>% filter(R_ID != greater_rid)
+		# }
+		diffs = c()
+		for(var in c('R_period', 'R_copy_num', 'R_size', 'R_sequence')){
+			if(nrow(unique(reg_rows[var])) > 1){
+				diffs = c(diffs, var)
+				}
+		}
+		target_id = reg_dup[2]
+		for(d_var in diffs){
+			if(d_var == 'R_size'){
+				target_id = reg_rows[reg_rows$R_size == max(unique(reg_rows$R_size)), 'R_ID']
+			}else{
+				print(paste('Nullifying', d_var))
+				hits[hits$R_ID %in% reg_dup, d_var] = NA
+			}
+		}
+		print(paste('Removing', target_id))
+		hits = hits %>% filter(R_ID != target_id)
+		
+	}
+	print(paste(length(unique(hits$R_ID)), length(unique(hits$R_coords))))
+}
+```
+
+```{r}
+print(paste(nrow(hits %>% distinct(Chrom, R_start, R_end)), nrow(hits_og %>% distinct(Chrom, R_start, R_end))))
+print(paste(nrow(hits %>% distinct(R_ID)), nrow(hits_og %>% distinct(R_ID))))
+```
+
+```{r}
+colnames(hits)
+ggdescribe(hits)
+```
+
+
+
+```{r}
+# hits[hits$Transcript=='ENST00000706377.1', 'Strand'] = '+'
+# hits[hits$Transcript=='ENST00000706377.1', 'Gene'] = 'PMPCA'
+# hits[hits$Transcript=='ENST00000706377.1', 'T_type'] = 'nonsense_mediated_decay'
+
+
+# hits.nd = hits %>% select(-c('I_ID', 'Transcript', 'T_type')) %>% unique()
+# hits.ndi = hits %>% distinct(I_coords, .keep_all = T)
+hits.unique = hits %>% distinct(R_ID, I_coords, .keep_all = T) %>% select(-c('I_ID', 'Transcript', 'T_type'))
+hits
+ggdescribe(hits.unique)
+```
+
+```{r}
+n_smaller = nrow(hits.unique %>% filter(I_size_diff == 'Smaller'))
+n_larger = nrow(hits.unique %>% filter(I_size_diff == 'Larger'))
+n_equal = nrow(hits.unique %>% filter(I_size_diff == 'Equal'))
+paste(n_smaller, 'in', nrow(hits.unique), '=', n_smaller/nrow(hits.unique)*100, '%')
+paste(n_larger, 'in', nrow(hits.unique), '=', n_larger/nrow(hits.unique)*100, '%')
+paste(n_equal, 'in', nrow(hits.unique), '=', n_equal/nrow(hits.unique)*100, '%')
+```
+
+
+
+```{r}
+nrow(hits.unique %>% distinct(R_ID))
+nrow(hits.unique %>% distinct(Chrom, R_start, R_end))
+
+nrow(hits_og %>% distinct(R_ID))
+nrow(hits_og %>% distinct(Chrom, R_start, R_end))
+
+nrow(hits_og %>% distinct(I_ID))
+nrow(hits_og %>% distinct(I_coords))
+nrow(hits.unique %>% distinct(I_coords))
+
+table(table(hits$R_ID))
+table(table(hits$I_coords))
+```
+
+```{r}
+paste(nrow(hits.unique %>% filter(I_size_diff == 'Larger') %>% distinct(I_coords)), nrow(hits.unique %>% filter(I_size_diff == 'Larger', I_mult3) %>% distinct(I_coords)))
+paste(nrow(hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0) %>% distinct(I_coords)), nrow(hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0, I_mult3) %>% distinct(I_coords)))
+paste(nrow(hits.unique %>% filter(I_size_diff == 'Equal') %>% distinct(I_coords)), nrow(hits.unique %>% filter(I_size_diff == 'Equal', I_mult3) %>% distinct(I_coords)))
+paste(nrow(hits.unique %>% filter(I_size_diff == 'Smaller') %>% distinct(I_coords)), nrow(hits.unique %>% filter(I_size_diff == 'Smaller', I_mult3) %>% distinct(I_coords)))
+
+view(hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0) %>% distinct(I_coords, .keep_all = T))
+view(hits.unique %>% filter(I_size_diff == 'Equal') %>% distinct(I_coords, .keep_all = T))
+view(hits.unique %>% filter(I_size_diff == 'Smaller') %>% distinct(I_coords, .keep_all = T))
+
+
+paste(nrow(hits.unique %>% filter(I_length %% R_size == 0) %>% distinct(I_coords)), nrow(hits.unique %>% filter(I_length %% R_size == 0, R_mult3) %>% distinct(I_coords)))
+```
+
+
+
+```{r}
+hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0)
+print(paste(nrow(hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0)), 'of', n_larger, 'is', nrow(hits.unique %>% filter(I_size_diff == 'Larger', I_length %% R_size == 0))/n_larger*100))
+
+mult3 = hits.unique %>% distinct(Chrom, R_start, R_end, .keep_all = T) %>% filter(R_size %% 3 == 0)
+print(paste(nrow(mult3), 'of', nrow(hits.unique %>% distinct(R_ID)), 'is', nrow(mult3)/nrow(hits.unique %>% distinct(R_ID))*100))
+
+paste(nrow(hits.unique %>% filter(I_mult3, R_mult3, I_length %% R_size == 0)), 
+			nrow(hits.unique %>% filter(I_mult3, R_mult3, I_length %% R_size == 0, ! Gene %in% c('UBC', 'VCX3A')))
+			)
+
+86/873*100
+52/86*100
+```
+
+
+
+```{r}
+df = as.data.frame(sort(table(hits.unique$Gene), decreasing=T))[1:20,]
+ggplot(df, aes(x=Freq, y=Var1)) +
+	geom_col() +
+	labs(x='Number of unique introns', y='Gene')
+```
+
+
+
+```{r}
+dist_norm(GENE_TYPES_GEN43)
+```
+
+
+
+```{r}
+cols = c('Chrom', 'Gene', 'I_start', 'I_end', 'I_length',  'R_start', 'R_end', 'R_size', 'I_size_diff')
+hits_table = hits.unique %>% select(cols) %>% 
+														 mutate(Chrom = str_sub(Chrom, start=4),
+														 			  Chrom = factor(Chrom, levels=c(as.character(1:22), 'X', 'Y')),
+														 				I_start = label_comma()(I_start),
+														 				I_end = label_comma()(I_end),
+														 			  I_length = label_comma()(I_length),
+														 				R_start = label_comma()(R_start),
+														 				R_end = label_comma()(R_end),
+														 			  R_size = label_comma()(R_size)
+														 			 ) %>% 
+														 arrange(Chrom, I_start, Gene, I_end, R_start, R_end)
+hits_table = hits_table[,cols]
+colnames(hits_table) = c('Chromosome', 'Gene', 'Intron start', 'Intron end', 'Intron length', 'Repeat start', 'Repeat end', 'Repeat unit length', 'Intron size')
+
+write.table(hits_table, file="repeats_x_introns_table.tsv", quote=F, row.names=F, sep='\t')
+
+hits_table = hits_table %>% gt() 
+hits_table
+
+# gtsave(hits_table, 'repeats_x_introns_table.html')
+gtsave(hits_table, 'repeats_x_introns_table.rtf')
+```
+
+
+
+```{r}
+unique_genes = filter(hits.unique, I_length %% R_size == 0) %>% select(c(Gene, Gene_ID, Gene_ID_base, Gene_type)) %>% 
+												distinct() %>% 
+												# separate_longer_delim(cols=c(Gene_ID, Gene_type, Gene_ID_base), ',') %>%
+												filter(! str_detect(Gene_ID, ',')) %>%
+												mutate(Gene_type_pretty = factor(case_when(Gene_type=='protein_coding' ~ 'Protein-coding',
+																														Gene_type=='IG_C_gene' ~ 'IG C',
+																														Gene_type=='lncRNA' ~ 'lncRNA',
+																														Gene_type=='pseudogene' ~ 'Pseudogene',
+																														# Gene_type=='processed_pseudogene' ~ 'Pseudogene, processed',
+																														# Gene_type=='unprocessed_pseudogene' ~ 'Pseudogene, unprocessed',
+																														# Gene_type=='transcribed_unprocessed_pseudogene' ~ 'Pseudogene, unprocessed & transcribed',
+																														# Gene_type=='transcribed_unitary_pseudogene' ~ 'Pseudogene, unitary & transcrbied',
+																														Gene_type=='processed_pseudogene' ~ 'Pseudogene',
+																														Gene_type=='unprocessed_pseudogene' ~ 'Pseudogene',
+																														Gene_type=='transcribed_unprocessed_pseudogene' ~ 'Pseudogene',
+																														Gene_type=='transcribed_unitary_pseudogene' ~ 'Pseudogene',
+																														.default=NA), levels=rev(c('Protein-coding', 'IG C', 'lncRNA', 'Pseudogene', 'Pseudogene, processed', 'Pseudogene, unprocessed', 'Pseudogene, unprocessed & transcribed', 'Pseudogene, unitary & transcrbied'))),
+															 Gene_type_group = case_when(Gene_type=='protein_coding' ~ 'Protein-coding',
+																														Gene_type=='IG_C_gene' ~ 'IG C',
+																														Gene_type=='lncRNA' ~ 'lncRNA',
+																														.default='Pseudo'))
+
+sum(is.na(unique_genes$Gene_type_pretty))
+sum(is.na(unique_genes$Gene_type_group))
+
+table(unique_genes$Gene_type)
+
+
+
+ggplot(unique_genes, aes(y=Gene_type)) +
+	geom_bar() +
+	labs(y="Gene type")
+# ggplot(unique_genes, aes(y=Gene_type_pretty, fill=Gene_type_group)) +
+ggplot(unique_genes, aes(y=Gene_type_pretty)) +
+	geom_bar() +
+	# scale_fill_brewer(type='qual', palette=3) +
+	labs(x = 'Number of unique genes', 
+			 y='Gene biotype') +
+	theme(axis.ticks.y=element_blank())
+ggsave('visuals/gene_biotypes.png', dpi=500)
+	
+```
+
+
+
+```{r}
+# gene_types = as.data.frame(table(unique_genes$Gene_type)) %>% rename('Gene_type'='Var1') %>% mutate(Gene_type = as.character(Gene_type))
+# gene_types[gene_types$Gene_type=='pseudogene', 'Freq'] = sum(gene_types[endsWith(gene_types$Gene_type, 'pseudogene'), 'Freq'])
+# gene_types = gene_types %>% filter(Gene_type %in% c('protein_coding', 'IG_C_gene', 'pseudogene', 'lncRNA')) %>%
+# 														mutate(Prop=Freq/sum(Freq), Group='Sample')
+# 
+# pop_gene_types = as.data.frame(GENE_TYPES_GEN43) 
+# pop_gene_types = pop_gene_types %>% rename('Freq'='GENE_TYPES_GEN43') %>% 
+# 																		mutate(Gene_type=rownames(.))
+# pop_gene_types[pop_gene_types$Gene_type=='pseudogene', 'Freq'] = sum(pop_gene_types[endsWith(pop_gene_types$Gene_type, 'pseudogene'), 'Freq'])
+# pop_gene_types = pop_gene_types %>% mutate(Prop=Freq/pop_gene_types[pop_gene_types$Gene_type=='total', 'Freq'], Group='Population') %>% filter(Gene_type %in% c('protein_coding', 'IG_C_gene', 'pseudogene', 'lncRNA'))
+# 
+# gene_types = gene_types %>% rbind(pop_gene_types) %>%
+# 														# mutate(Gene_type = factor(case_when(Gene_type=='protein_coding' ~ 'Protein-coding',
+# 														mutate(
+# 																																# Gene_type=='IG_C_gene' ~ 'IG C',
+# 																																# Gene_type=='pseudogene' ~ 'Pseudogene',
+# 																																# Gene_type=='lncRNA' ~ 'lncRNA',
+# 																																# .default=NA), levels = c('Protein-coding', 'IG C', 'Pseudogene', 'lncRNA')),
+# 																	 Group=factor(Group, levels=c('Population', 'Sample'))) %>%
+# 														arrange(Group, Gene_type)
+# rownames(gene_types) = 1:nrow(gene_types)
+# 
+# # cont_table = matrix(gene_types$Freq, nrow=4)
+# # chisq.test(cont_table)
+# # fisher_result = fisher.test(cont_table)
+# # fisher_result.p = paste('*p* =', label_scientific(digits=3)(as.numeric(fisher_result['p.value'])))
+# 
+# 
+# ggplot(gene_types, aes(x=Gene_type, fill=Group, y=Prop)) +
+# 	geom_col(position='dodge') +
+# 	# geom_richtext(aes(x=2.5, y=0.59, label=fisher_result.p), fill='white', label.color='white', size=3) +
+# 	scale_y_continuous(limits=c(0,0.6), breaks=seq(0,0.6,0.1)) +
+# 	scale_fill_manual(values=c('#404040', '#bfbfbf')) +
+# 	labs(x='Gene biotype', y='Proportion of genes', fill=NULL)
+# 
+# ggsave('visuals/gene_biotypes.png', height=3, width=5, dpi=500)
+# 	
+# # ggbarstats(gene_types, y=Gene_type, x=Prop, fill=Group, type='nonparametric')
+```
+
+
+```{r}
+gene_table = list('All' = unique(hits$Gene_ID_base), 
+									'Larger' = unique(hits[hits$I_size_diff=='Larger', 'Gene_ID_base']), 
+									'Equal' = unique(hits[hits$I_size_diff=='Equal', 'Gene_ID_base']), 
+									'Smaller' = unique(hits[hits$I_size_diff=='Smaller', 'Gene_ID_base']),
+									'Multiple' = unique(unlist(filter(hits, I_length %% R_size == 0)['Gene'])),
+									'Multiple_Nonequal' = unique(unlist(filter(hits, I_length > R_size & I_length %% R_size == 0)['Gene_ID_base'])),
+									'Multiple_and_Rmult3' = unique(unlist(filter(hits, R_size %% 3 == 0, I_length %% R_size == 0)['Gene_ID_base'])))
+
+for(gene_subset in c('All', 'Larger', 'Equal', 'Smaller', 'Multiple', 'Multiple_Nonequal')){
+	gene_table[[gene_subset]] = gene_table[[gene_subset]][! str_detect(gene_table[[gene_subset]], '[,]')]
+# 	if(any(gene_table[[gene_subset]] == 'ENSG00000272150,ENSG00000291005')){
+# 		gene_table[[gene_subset]] = gene_table[[gene_subset]][gene_table[[gene_subset]] != 'ENSG00000272150,ENSG00000291005']
+# 		gene_table[[gene_subset]] = unique(append(gene_table[[gene_subset]],	'ENSG00000272150'))
+# 		gene_table[[gene_subset]] = unique(append(gene_table[[gene_subset]],	'ENSG00000291005'))
+# 	}
+}
+
+gene_table = as.data.frame(lapply(gene_table, `length<-`, max(sapply(gene_table, length))))
+
+write.table(gene_table, file="repeats_x_introns_genes.tsv", quote=F, row.names=F, col.names=T, sep='\t')
+```
+
+```{r}
+table(unique_genes[unique_genes$Gene_ID_base %in% PANTHER_UNMAPPED, 'Gene_type'])
+table(unique_genes$Gene_type)
+```
+
+
+
+```{r}
+# eq_or_gt = hits.unique
+eq_or_gt = hits.unique %>% filter(I_length >= R_size)
+intron_lengths = eq_or_gt %>% select(c('I_length', 'I_coords', 'R_mult3'))
+
+# n_trials = 10
+n_trials = 1000*100
+n_intron_is_mult = c()
+n_intron_is_mult_rmult3 = c()
+set.seed(1)
+for(t in 1:n_trials){
+	repeat_lengths = sample(eq_or_gt$R_size)
+	n_intron_is_mult = c(n_intron_is_mult, nrow(intron_lengths %>% filter(I_length %% repeat_lengths == 0) %>% distinct(I_coords)))
+	n_intron_is_mult_rmult3 = c(n_intron_is_mult_rmult3, nrow(intron_lengths %>% filter(I_length %% repeat_lengths == 0, R_mult3) %>% distinct(I_coords)))
+}
+```
+
+
+
+```{r}
+n_intron_is_mult.df = as.data.frame(table(n_intron_is_mult)) %>% rename('N'='n_intron_is_mult') %>% mutate(Prop = Freq/n_trials)
+sum(n_intron_is_mult.df$Prop)
+
+ggplot(n_intron_is_mult.df, aes(x=N, y=Prop)) +
+	geom_col() +
+	scale_y_continuous(labels=label_percent(scale = 100)) +
+	labs(y=NULL, x=md('Number of times Intron length mod Repeat Unit length = 0'))
+```
+
+```{r}
+n_intron_is_mult_rmult3.df = as.data.frame(table(n_intron_is_mult_rmult3)) %>% rename('N'='n_intron_is_mult_rmult3') %>% mutate(Prop = Freq/n_trials)
+sum(n_intron_is_mult_rmult3.df$Prop)
+
+ggplot(n_intron_is_mult_rmult3.df, aes(x=N, y=Prop)) +
+	geom_col() +
+	scale_y_continuous(labels=label_percent(scale = 100)) +
+	labs(y=NULL, x=md('Number of times Intron length mod Repeat Unit length = 0 AND Repeat unit is mult of 3'))
+```
+
+```{r}
+# n_intron_is_noneq_mult.df = as.data.frame(table(n_intron_is_noneq_mult)) %>% rename('N'='n_intron_is_noneq_mult') %>% mutate(Prop = Freq/n_trials)
+# sum(n_intron_is_noneq_mult.df$Prop)
+# 
+# ggplot(n_intron_is_noneq_mult.df, aes(x=N, y=Prop)) +
+# 	geom_col() +
+# 	scale_y_continuous(labels=label_percent(scale = 100)) +
+# 	labs(y=NULL, x=md('Number of times Intron > Repeat and Intron length mod Repeat Unit length = 0'))
+```
+
+```{r}
+# n_intron_is_eq.df = as.data.frame(table(n_intron_is_eq)) %>% rename('N'='n_intron_is_eq') %>% mutate(Prop = Freq/n_trials)
+# sum(n_intron_is_eq.df$Prop)
+# 
+# ggplot(n_intron_is_eq.df, aes(x=N, y=Prop)) +
+# 	geom_col() +
+# 	scale_y_continuous(labels=label_percent(scale = 100)) +
+# 	labs(y=NULL, x='Number of times Intron length = Repeat Unit length')
+```
+
+
+
+```{r}
+n_len_mult = nrow(hits.unique %>% filter(I_length %% R_size == 0) %>% distinct(I_coords))
+n_len_mult_rmult3 = nrow(hits.unique %>% filter(I_length %% R_size == 0, R_mult3) %>% distinct(I_coords))
+# n_len_noneq_mult = nrow(hits.unique %>% filter(I_length > R_size, I_length %% R_size == 0) %>% distinct(I_coords))
+# n_len_eq = nrow(hits.unique %>% filter(I_length == R_size) %>% distinct())
+paste(n_len_mult, n_len_mult_rmult3)
+
+mult_success = sum(n_intron_is_mult >= n_len_mult)
+paste(mult_success, mult_success / n_trials, mean(n_intron_is_mult))
+
+mult_rmult3_success = sum(n_intron_is_mult_rmult3 >= n_len_mult_rmult3)
+paste(mult_rmult3_success, mult_rmult3_success / n_trials, mean(n_intron_is_mult_rmult3))
+
+# noneq_mult_success = sum(n_intron_is_noneq_mult >= n_len_noneq_mult)
+# paste(noneq_mult_success, noneq_mult_success / n_trials, mean(n_intron_is_noneq_mult))
+# 
+# eq_success = sum(n_intron_is_eq >= n_len_eq)
+# paste(eq_success, eq_success / n_trials, mean(n_intron_is_eq))
+
+# nrow(hits.unique %>% filter(I_length %% R_size != 0) %>% distinct(I_coords))
+# nrow(hits.unique %>% distinct(I_coords))
+paste(n_len_mult/mean(n_intron_is_mult), n_len_mult_rmult3/mean(n_intron_is_mult_rmult3))
+```
+
+
+
+```{r}
+df = hits.unique %>% mutate(Larger_mult = case_when((I_size_diff=='Larger') & (I_length %% R_size == 0) ~ 'Intron size is a multiple of repeat unit size',
+																										(I_size_diff=='Larger') & (I_length %% R_size != 0) ~ 'False',
+																										.default = 'Other'),
+														I_size_diff = case_when(I_size_diff == 'Smaller' ~ 'Smaller than repeat unit',
+																										I_size_diff == 'Equal'	~ 'Equal to repeat unit',
+																										I_size_diff == 'Larger' ~ 'Larger than repeat unit'), 
+														 I_size_diff = factor(I_size_diff, levels = c('Larger than repeat unit', 'Equal to repeat unit', 'Smaller than repeat unit'))
+														)
+
+											 # I_size_diff = factor(I_size_diff, levels = c('Larger', 'Equal', 'Smaller'))
+ggplot(df, aes(x=I_size_diff)) +
+	geom_bar() +
+	labs(x='Intron size',
+			 y='Count',
+			 fill = 'Intron size is a multiple of repeat unit size')
+
+```
+
+
+
+```{r}
+GO_bio_process = t(data.frame(c("positive regulation of mRNA splicing, via spliceosome", 5, 4.997556488580143e-7, 'Biological process', 0.7),
+															 c("positive regulation of RNA splicing", 6, 9.435000882031657e-8, 'Biological process', 0.8),
+															 c("regulation of RNA splicing", 7, 0.000020884407771105312, 'Biological process', 0.9),
+															 c("positive regulation of mRNA processing", 5, 0.000001569882516702664, 'Biological process', 0.8),
+															 c("regulation of mRNA splicing, via spliceosome", 6, 0.000010110882862789055, 'Biological process', 0.8),
+															 c("RNA splicing", 10, 0.000008569223591528847, 'Biological process', 1),
+															 c("mRNA processing", 11, 0.000006850410330793406, 'Biological process', 1),
+															c("spliceosomal complex", 8, 0.000004535239547449967, 'Cellular component', 1) 
+															)
+										)
+rownames(GO_bio_process) = 1:nrow(GO_bio_process)
+colnames(GO_bio_process) = c("Term", "Number", "p", 'Aspect', 'Alpha')
+GO_bio_process = as.data.frame(GO_bio_process) %>% mutate(Number=as.numeric(Number), p=as.double(p), Alpha=as.numeric(Alpha), neglogp = -log10(p)) 
+```
+
+
+
+```{r}
+ggplot(GO_bio_process, aes(x=neglogp, y=reorder(Term, neglogp), fill=Aspect)) +
+	geom_col() +
+	geom_text(aes(x=neglogp*1.02, y=Term, label=paste('n=',Number, sep='')), size=4, hjust=0) +
+	scale_x_continuous(limits=c(0,8), breaks=seq(0,8,2)) +
+	scale_fill_brewer(type='qual', palette = 1, guide=NULL) +
+	scale_alpha_continuous(guide=NULL) +
+	labs(x='-log~10~(p-value)', y='GO term', fill=NULL) +
+	theme(axis.title.x=element_markdown(size=22, family='Arial', color='black'),
+				axis.title.y=element_markdown(size=22, family='Arial', color='black'),
+				axis.text.x = element_markdown(size=16, family='Arial', color='black'),
+				axis.text.y = element_markdown(size=16, family='Arial', color='black'),
+				axis.ticks.y = element_blank(),
+				legend.text = element_markdown(size=16, family='Arial', color='black'))
+
+ggsave('visuals/GO_terms.pdf', height=4, width=8, dpi=500)
+```
+
+
+
+```{r}
+hits.unique.mult = hits.unique %>% filter(I_length %% R_size == 0)
+hits.unique.mult %>% distinct(Gene, Gene_ID_base) %>% rename('Gene_symbol'='Gene') %>% write.table(file="intron_mult_repeat_genes.tsv", quote=F, row.names=F, col.names=T, sep='\t')
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+#Start of post-review stuff
+stopifnot( nrow(hits.unique %>% distinct(I_coords, I_isAGGT)) == nrow(hits.unique %>% distinct(I_coords)) )
+table((hits.unique %>% distinct(I_coords, I_isAGGT))$I_isAGGT)
+
+mults = hits.unique %>% filter(I_length %% R_size == 0) %>%
+												distinct(I_coords, .keep_all = T) %>%
+												unite('ThreeFive', Threess, Fivess, sep='/')
+nrow(mults %>% filter(I_isAGGT) %>% distinct(I_coords))
+ggdescribe(mults)
+```
+
+
+
+```{r}
+ggbar(mults, 'ThreeFive', order_by_count = T)
+```
+
+
+
+```{r}
+# df = data.frame('N' = c(n_intron_is_mult, n_len_mult),
+# 					 'Group' = c(rep('Permutation', length(n_intron_is_mult)), 'Observed')
+# 					 )
+# ggplot() +
+# 	geom_boxplot(data=df[df$Group=='Permutation',], mapping=aes(x=Group, y=N)) +
+# 	geom_col(data=df[df$Group=='Observed',], mapping=aes(x=Group, y=N)) +
+# 	scale_y_continuous(limits=c(0,80), breaks=seq(0,80,10))
+# 	labs(x=NULL,
+# 			 y='Intron length = Repeat unit length x C')
+```
+
+
+
+```{r}
+# df = data.frame('N' = c(n_intron_is_mult_rmult3, n_len_mult_rmult3),
+# 					 'Group' = c(rep('Permutation', length(n_intron_is_mult_rmult3)), 'Observed')
+# 					 )
+# ggplot() +
+# 	geom_boxplot(data=df[df$Group=='Permutation',], mapping=aes(x=Group, y=N)) +
+# 	geom_col(data=df[df$Group=='Observed',], mapping=aes(x=Group, y=N)) +
+# 	# scale_y_continuous(limits=c(0,80), breaks=seq(0,80,10))
+# 	labs(x=NULL,
+# 			 y='Intron length = Repeat unit length x C')
+```
+
+
+
+```{r}
+df = data.frame(N=c(n_len_mult/mean(n_intron_is_mult), n_len_mult_rmult3/mean(n_intron_is_mult_rmult3)), 
+								Group= c("Intron's length is a multiple of the repeat unit's length", "Intron's length is a multiple of the repeat unit's length and the repeat unit's length is a multiple of 3")
+								)
+
+ggplot(df, aes(x=Group, y=N, fill=Group)) +
+	geom_col(position='dodge', width=1) +
+	scale_fill_manual(values=c('#bfbfbf', 'black')) +
+	scale_y_continuous(limits=c(0,10), breaks=seq(0,10,2)) +
+	labs(y='Enrichment', fill=NULL) +
+	theme(text=element_text(family='Arial'),
+				legend.position='bottom', 
+				legend.direction = 'vertical',
+				legend.title=element_blank(),
+				legend.text = element_text(size=10), 
+				axis.ticks.x=element_blank(),
+				axis.text.x = element_blank(),
+				axis.text.y = element_text(size=20),
+				axis.title.y = element_text(size=20),
+				axis.title.x = element_blank())
+
+ggsave('visuals/permute_results.svg')
+```
+
+
+
+```{r}
+# df = data.frame(table((hits.unique %>% filter(I_length %% R_size == 0) %>% distinct(I_coords, .keep_all = T) %>% distinct(Gene_ID, .keep_all=T))['Gene_type'])) 
+df = data.frame(table((hits.unique %>% filter(I_length %% R_size == 0, R_mult3) %>% distinct(I_coords, .keep_all = T) %>% distinct(Gene_ID, .keep_all=T))['Gene_type']))
+df = df %>% mutate(Prop=Freq/sum(df$Freq), Group='DSS (n=63 genes)')
+
+df2 = data.frame(table((hits.unique %>% filter(! I_coords %in% mults$I_coords) %>% distinct(Gene_ID, .keep_all=T))['Gene_type']))
+df2 = df2 %>% filter(Gene_type != 'lncRNA,transcribed_unprocessed_pseudogene')
+df2[df2$Gene_type=='lncRNA', 'Freq'] = df2[df2$Gene_type=='lncRNA', 'Freq'] + 1
+df2[df2$Gene_type=='transcribed_unprocessed_pseudogene', 'Freq'] = df2[df2$Gene_type=='transcribed_unprocessed_pseudogene', 'Freq'] + 1
+							# rbind(data.frame(Gene_type=c('lncRNA', 'transcribed_unprocessed_pseudogene'),
+															 # Freq=c(1,1)))
+df2 = df2 %>% mutate(Prop=Freq/sum(df2$Freq), Group='Non-DSS (n=140 genes)') 
+
+df = df %>% rbind(df2)
+
+cont_table = df %>% select(-c('Prop')) %>% pivot_wider(names_from=Gene_type, values_from=Freq, values_fill = 0)
+rownames(cont_table) = cont_table$Group
+cont_table = cont_table %>% select(-c('Group'))
+cont_table = as.matrix(cont_table)
+
+df_pc = df %>% rbind()
+df_pc['Gene_type'] = as.character(df_pc$Gene_type)
+newrow_dss = list('Not protein_coding', sum(df[df$Gene_type!='protein_coding' & df$Group=='DSS (n=63 genes)', 'Freq']), sum(df[df$Gene_type!='protein_coding' & df$Group=='DSS (n=63 genes)', 'Freq'])/63, 'DSS (n=63 genes)')
+new_row_nondss = list('Not protein_coding', sum(df[df$Gene_type!='protein_coding' & df$Group=='Non-DSS (n=140 genes)', 'Freq']), sum(df[df$Gene_type!='protein_coding' & df$Group=='Non-DSS (n=140 genes)', 'Freq'])/140, 'Non-DSS (n=140 genes)')
+df_pc = df_pc %>% filter(Gene_type=='protein_coding') 
+df_pc = df_pc %>% rowbind(newrow_dss) %>% rowbind(new_row_nondss)
+cont_table_pc = as.data.frame(cont_table)
+cont_table_pc['Not protein_coding'] = rowSums(cont_table_pc %>% select(-c('protein_coding')))
+cont_table_pc = cont_table_pc %>% select(c('protein_coding', 'Not protein_coding'))
+cont_table_pc = as.matrix(cont_table_pc)
+
+fisher.test(cont_table)
+chisq.test(cont_table)
+chisq.test(cont_table_pc)
+fisher.test(cont_table_pc)
+
+# for(type in unique(df$Gene_type)){
+# 	df = df %>% rbind(data.frame('Gene_type'=type,
+# 															# 'Freq'=GENE_TYPES_GEN43[type],
+# 															'Freq'=NA,
+# 															'Prop'=GENE_TYPES_GEN43[type]/sum(GENE_TYPES_GEN43),
+# 															'Group'='Whole genome'))
+# }
+rownames(df) = 1:nrow(df)
+type_levels = c('protein_coding', 'lncRNA', 'IG_C_gene', 'pseudogene', 'processed_pseudogene', 'unprocessed_pseudogene', 'transcribed_unprocessed_pseudogene', 'transcribed_unitary_pseudogene')
+stopifnot(setequal(type_levels, unique(df$Gene_type)))
+df$Gene_type = factor(df$Gene_type, unique(df$Gene_type))
+
+
+# chisq.test(cont_table)
+# fisher_result = fisher.test(cont_table)
+# fisher_result.p = paste('*p* =', label_scientific(digits=3)(as.numeric(fisher_result['p.value'])))
+
+ggplot(df_pc, aes(x=Gene_type, fill=as.factor(Group), y=Prop, label=comma(Freq))) +
+	geom_col(position='dodge') +
+	geom_text(aes(y=Prop+0.02), position=position_dodge(width=0.9), vjust=-0.1, size=3) +
+	scale_x_discrete(drop=F) +
+	scale_y_continuous(limits=c(0,0.6), breaks=seq(0,0.6,0.1), labels=percent_format()) +
+	scale_fill_brewer(type='qual', palette=2) +
+	labs(x='Biotype', y='Proportion of genes', fill=NULL) +
+	theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))
+
+ggplot(df, aes(x=Gene_type, fill=as.factor(Group), y=Prop, label=comma(Freq))) +
+	geom_col(position='dodge') +
+	geom_text(aes(y=Prop+0.02), position=position_dodge(width=0.9), vjust=-0.1, size=3) +
+	scale_x_discrete(drop=F) +
+	scale_y_continuous(limits=c(0,0.6), breaks=seq(0,0.6,0.1), labels=percent_format()) +
+	scale_fill_brewer(type='qual', palette=2) +
+	labs(x='Biotype', y='Proportion of genes', fill=NULL) +
+	theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))
+
+ggsave('visuals/gene_biotypes.pdf', dpi=500)
+```
+
+
+
+```{r}
+df %>% select(-c('Prop')) %>% pivot_wider(names_from=Gene_type, values_from=Freq, values_fill = 0)
+```
+
+
+
+```{r}
+mults$I_coords
+```
+
+
+
+```{r}
+df = mults %>% mutate(Group = case_when(!R_mult3 ~ "Intron's length is a multiple of the repeat unit's length", 
+																				R_mult3 ~ "Intron's length is a multiple of the repeat unit's length and the repeat unit's length is a multiple of 3",
+																				.default=NA
+																				)
+											)
+
+ggplot(df, aes(x=ThreeFive, fill=Group)) +
+	geom_bar() +
+	scale_fill_manual(values=c('#bfbfbf', 'black')) +
+	labs(x="Splice sites (5'ss/3'ss)", y='Intron count') +
+	theme(text=element_text(family='Arial'),
+				legend.position='bottom', 
+				legend.direction = 'vertical',
+				legend.title=element_blank(),
+				legend.text = element_text(size=10), 
+				axis.title = element_text(size=20),
+				axis.text = element_text(size=12))
+
+ggsave('visuals/mult_splice_sites.pdf')
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{}
+----------   Discarded code   ----------
+
+df = rbind(data.frame('N' = c(n_len_mult/mean(n_intron_is_mult)),
+									# 'Source' = c('Permutation', 'Observed'),
+									'Group' = "Intron's length is a multiple of the repeat unit's length"
+									# 'Error' = c(sd(n_intron_is_mult)/sqrt(length(n_intron_is_mult)), NA),
+						),
+					 data.frame('N' = c(n_len_mult_rmult3/mean(n_intron_is_mult_rmult3)),
+										 # 'Source' = c('Permutation', 'Observed'),
+										 'Group' = "Intron's length is a multiple of the repeat unit's length and the repeat unit's length is a multiple of 3"
+										 # 'Error' = c(sd(n_intron_is_mult_rmult3)/sqrt(length(n_intron_is_mult)), NA))
+					))
+# df = df %>% mutate(X = paste(Source, Group))
+df$Group = factor(df$Group, levels = c('Total', "Repeat unit's length is a multiple of 3"))
+
+ggplot(df, aes(x=Group, y=N, fill=Group)) +
+	geom_col(position='dodge', width=0.8) +
+	# geom_errorbar(aes(ymin=N-Error, ymax=N+Error), position=position_dodge(0.5), width=0.5) +
+	scale_fill_manual(values=c('#bfbfbf', 'black')) +
+	scale_y_continuous(limits=c(0,80), breaks=seq(0,80,20)) +
+	labs(y='Intron Count', fill=NULL) +
+	theme(text=element_text(family='Arial'),
+				legend.position='bottom', 
+				legend.title=element_blank(),
+				legend.text = element_text(size=20), 
+				axis.text = element_text(size=20),
+				axis.title.y = element_text(size=20),
+				axis.title.x = element_blank())
+				
+fivess_col = c()
+threess_col = c()
+for(n in 1:nrow(hits.unique)){
+	row = hits.unique[n,]
+	if(row['Strand'] == '+'){
+		
+		fivess_index = row['I_start'] - row['R_start']
+		fivess = str_sub(row['R_sequence'], fivess_index, fivess_index+2)
+		fivess_col = c(fivess_col, fivess)
+		
+		threess_index = row['I_end'] - row['R_start']
+		threess = str_sub(row['R_sequence'], threess_index-2, threess_index)
+		threess_col = c(threess_col, threess)
+	}else{
+		fivess_index = row['I_end'] - row['R_start']
+		fivess = str_sub(row['R_sequence'], fivess_index-2, fivess_index)
+		fivess = rev_comp(fivess)
+		fivess_col = c(fivess_col, fivess)
+		
+		threess_index = row['I_start'] - row['R_start']
+		threess = str_sub(row['R_sequence'], threess_index, threess_index+2)
+		threess = rev_comp(threess)
+		threess_col = c(threess_col, threess)
+	}
+}
+hits.unique %>% mutate(Fivess=fivess_col, 
+											 Threess=threess_col)
+											 
+											 
+rev_comp = function(sequence){
+	stopifnot( !grepl("[^ATGC]", sequence) ) # from https://stackoverflow.com/questions/68083943/determine-whether-a-string-only-contains-certain-characters-in-r
+	out_seq = chartr('ATGC', 'TACG', sequence)
+	out_seq = intToUtf8( rev( utf8ToInt(out_seq) ) )
+	out_seq
+}
+rev_comp('ACGTGTAC')
+
+
+ggplot(hits.unique, aes(y=Gene)) +
+	geom_bar() +
+	# scale_x_continuous(limits=c(0,40), breaks = seq(0,40,5)) +
+	labs(x='Count') + 
+	theme(axis.ticks.y=element_blank())
+ggsave('visuals/repeats_introns_genes.png', dpi=500)
+gene_freq = as.data.frame(table(table(hits.unique$Gene)))
+gene_freq$Var1 = as.numeric(as.character(gene_freq$Var1))
+ggplot(gene_freq, aes(x=Var1, y=Freq)) +
+	geom_col()
+
+# print(paste(nrow(unique(hits[c('Chrom', 'I_start', 'I_end', 'Gene')])), nrow(unique(hits[c('Chrom', 'I_start', 'I_end')])), length(unique(hits$I_coords))))
+# 
+# n_repeats = length(unique(hits$R_ID))
+# n_repeats_mult3 = length(unique(hits[hits$R_mult3, c('R_ID')]))
+# # n_introns = nrow(unique(hits[c('I_ID')]))
+# # n_introns_mult3 = length(unique(hits[hits$I_mult3, c('I_ID')]))
+# n_introns = nrow(unique(hits[c('Chrom', 'I_start', 'I_end', 'Gene')]))
+# n_introns_mult3 = nrow(unique(hits[hits$I_mult3, c('Chrom', 'I_start', 'I_end', 'Gene')]))
+# n_genes = length(unique(hits$Gene))
+# mult3_n_genes = length(unique(hits[hits$R_mult3, 'Gene']))
+# 
+# print(paste(nrow(hits), 'hits total'))
+# print(paste(n_genes, 'genes,', mult3_n_genes, 'of which have a intron x mult3 repeat pair'))
+# print(paste(n_repeats, 'unique repeat regions,', n_repeats_mult3, 'or', label_percent()(n_repeats_mult3/n_repeats), 'of which are a mult of 3'))
+# print(paste(n_introns, 'unique introns,', n_introns_mult3, 'or', label_percent()(n_introns_mult3/n_introns), 'of which are a mult of 3'))
+# print(paste(nrow(true_hits), 'unique introns are inside a multiple-of-3 repeat region'))
+
+# ggdescribe(hits)
+
+# table(table(hits$I_ID))
+# table(hits$R_ID)
+
+# ggplot(hits, aes(x=I_Length, y=R_Length, color=Gene)) +
+# 	geom_point() +
+# 	guides(color='none') +
+# 	labs(x="Intron Length",
+# 			 y="Repeat Length")
+
+# intron_counts = as.data.frame(table(table(hits$Intron_ID)))
+# region_counts = as.data.frame(table(table(hits$Region_ID)))
+# region_counts$Var1 = as.numeric(as.character(region_counts$Var1))
+
+# ggplot(intron_counts, aes(x=Var1, y=Freq)) + 
+# 	geom_col() +
+# 	labs(x = "Intron Hits",
+# 			 y="Count")
+# 
+# ggplot(region_counts, aes(x=Var1, y=Freq)) + 
+# 	geom_col() +
+# 	scale_x_continuous(limits=c(0,40), breaks = seq(0,40,5)) +
+# 	scale_y_continuous(limits=c(0,12), breaks=seq(0,12,2)) +
+# 	labs(x = "Repeat Region Hits",
+# 			 y="Count")
+```
