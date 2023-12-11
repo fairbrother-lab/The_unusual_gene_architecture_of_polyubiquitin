@@ -15,6 +15,6 @@ Scripts & results data for the following research paper:
 >*Correspondence:
 >William Fairbrother  william_fairbrother@brown.edu
 
-All other data can be found at DOI [10.5281/zenodo.8122164](https://doi.org/10.5281/zenodo.8122164)
+All other data can be found at DOI [10.5281/zenodo.8122164](https://doi.org/10.5281/zenodo.8101789)
 
 Note: Some scripts in scripts/gnomAD reference a folder in data/gnomAD that isn't included to its size (>3 TB). The files contained in the folder can be downloaded from Google Cloud Public Datasets at gs://gcp-public-data--gnomad/release/3.1.1/vcf/genomes and gs://gcp-public-data--gnomad/release/2.1.1/vcf/genomes as in scripts/gnomAD/gnomAD_download.sh
